@@ -19,41 +19,45 @@
  * Progress/diagnostic messages go to stderr (safe to suppress).
  *
  * Resolution strategy for better-sqlite3:
- *   This file is copied to /usr/local/bin/ inside the Docker image.
- *   Node ESM `import` walks UP from the importer's directory looking for
- *   node_modules — from /usr/local/bin/ there are none, so bare specifiers
- *   fail. We use createRequire() to load better-sqlite3 from OmniRoute's
- *   own node_modules at /usr/lib/node_modules/omniroute/, which is where
- *   the 3.8.50 package is installed. This avoids bundling a second copy.
+ *   This file is copied to /usr/local/bin/ inside the Docker image, where no
+ *   node_modules directory exists above it. The official OmniRoute 3.8.50
+ *   image uses `WORKDIR /app` and ships the native dependency at
+ *   /app/node_modules/better-sqlite3. We therefore anchor ESM resolution to
+ *   the application root with createRequire('/app/package.json'), which makes
+ *   require('better-sqlite3') resolve to exactly that installation.
  */
 
 import { createRequire } from 'module';
 import { existsSync, createReadStream, createWriteStream } from 'fs';
 import { unlink } from 'fs/promises';
-import { dirname, resolve } from 'path';
+import { dirname } from 'path';
 import { access, constants } from 'fs/promises';
 import { createGzip } from 'zlib';
 import { createHash } from 'crypto';
 
-// ── Locate better-sqlite3 via OmniRoute's own node_modules ─────────────────
-// Try the known global install location first; fall back to require() chain
-// resolution so this still works if the image layout changes.
-const OMNIROUTE_PKG = '/usr/lib/node_modules/omniroute';
+// Application root inside the official OmniRoute image (WORKDIR /app).
+const APP_ROOT = '/app';
+const APP_PACKAGE_JSON = `${APP_ROOT}/package.json`;
+
+// ── Locate better-sqlite3 from the application root ────────────────────────
+function loadBetterSqlite3() {
+  if (!existsSync(APP_PACKAGE_JSON)) {
+    throw new Error(`application package.json not found at ${APP_PACKAGE_JSON}`);
+  }
+  const req = createRequire(APP_PACKAGE_JSON);
+  const mod = req('better-sqlite3');
+  if (typeof mod !== 'function') {
+    throw new Error('better-sqlite3 did not export a constructor');
+  }
+  return mod;
+}
 
 let Database;
 try {
-  const requireFromOmniroute = createRequire(resolve(OMNIROUTE_PKG, 'package.json'));
-  Database = requireFromOmniroute('better-sqlite3');
+  Database = loadBetterSqlite3();
 } catch (e) {
-  // Fallback: if the path above is wrong, try createRequire from this file
-  try {
-    const requireFromHere = createRequire(import.meta.url);
-    Database = requireFromHere('better-sqlite3');
-  } catch (e2) {
-    console.error(`[backup-helper] Cannot load better-sqlite3: ${e.message}`);
-    console.error(`[backup-helper] Fallback also failed: ${e2.message}`);
-    process.exit(1);
-  }
+  console.error(`[backup-helper] Cannot load better-sqlite3 from ${APP_ROOT}: ${e.message}`);
+  process.exit(1);
 }
 
 // ── Helper: gzip a file and compute SHA-256 of both compressed + uncompressed

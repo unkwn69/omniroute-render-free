@@ -2,8 +2,8 @@
 /**
  * OmniRoute Supabase Storage & Health Helper
  *
- * Provides Node.js fetch-based download, upload, and health check
- * operations without requiring curl.
+ * Provides Node.js fetch-based download, upload, health check,
+ * and SQLite integrity verification operations without requiring curl.
  *
  * Usage:
  *   node storage-helper.mjs download <object-name> <output-path>
@@ -28,9 +28,21 @@ function sanitizeError(msg) {
 }
 
 function getObjectUrl(objectName) {
-  // Encode each segment of the path while keeping slashes
   const encoded = objectName.split('/').map(encodeURIComponent).join('/');
   return `${SUPABASE_URL}/storage/v1/object/${encodeURIComponent(SUPABASE_BUCKET)}/${encoded}`;
+}
+
+export function loadBetterSqlite3() {
+  const APP_PACKAGE_JSON = '/app/package.json';
+  if (!existsSync(APP_PACKAGE_JSON)) {
+    throw new Error(`application package.json not found at ${APP_PACKAGE_JSON}`);
+  }
+  const req = createRequire(APP_PACKAGE_JSON);
+  const mod = req('better-sqlite3');
+  if (typeof mod !== 'function') {
+    throw new Error('better-sqlite3 did not export a constructor');
+  }
+  return mod;
 }
 
 async function download(objectName, outputPath) {
@@ -129,19 +141,12 @@ async function verifySqlite(sqlitePath) {
     process.exit(1);
   }
 
-  const OMNIROUTE_PKG = '/usr/lib/node_modules/omniroute';
   let Database;
   try {
-    const requireFromOmniroute = createRequire(resolve(OMNIROUTE_PKG, 'package.json'));
-    Database = requireFromOmniroute('better-sqlite3');
-  } catch (e) {
-    try {
-      const requireFromHere = createRequire(import.meta.url);
-      Database = requireFromHere('better-sqlite3');
-    } catch (e2) {
-      console.error(`[storage-helper] Cannot load better-sqlite3: ${e.message}`);
-      process.exit(1);
-    }
+    Database = loadBetterSqlite3();
+  } catch (err) {
+    console.error(`[storage-helper] Cannot load better-sqlite3: ${err.message}`);
+    process.exit(1);
   }
 
   let db;
