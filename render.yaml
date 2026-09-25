@@ -1,0 +1,74 @@
+services:
+  - type: web
+    name: omniroute-free
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
+    envVars:
+      # ── Render runtime ──────────────────────────────────────────────────────
+      - key: PORT
+        value: "10000"
+      - key: HOSTNAME
+        value: "0.0.0.0"
+      - key: NODE_ENV
+        value: "production"
+
+      # ── OmniRoute data directory ────────────────────────────────────────────
+      - key: DATA_DIR
+        value: "/app/data"
+
+      # ── OmniRoute security flags ────────────────────────────────────────────
+      - key: REQUIRE_API_KEY
+        value: "true"
+      - key: AUTH_COOKIE_SECURE
+        value: "true"
+      - key: ALLOW_API_KEY_REVEAL
+        value: "false"
+      - key: STORAGE_ENCRYPTION_KEY_VERSION
+        value: "v1"
+
+      # ── Supabase storage (server-side only; values set in Render dashboard) ─
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_STORAGE_KEY
+        sync: false
+
+      # ── Snapshot / manifest objects ─────────────────────────────────────────
+      # These are object names inside the "omniroute" bucket.
+      # The snapshot is the gzip-compressed SQLite file (~13 MB compressed).
+      # The manifest is a small JSON file tracking the current snapshot SHA-256.
+      - key: SUPABASE_BUCKET
+        value: "omniroute"
+      - key: SUPABASE_SNAPSHOT_OBJECT
+        value: "storage-render-snapshot.sqlite.gz"
+      - key: SUPABASE_MANIFEST_OBJECT
+        value: "snapshot-manifest.json"
+
+      # ── Initial restore SHA-256 (of DECOMPRESSED SQLite, not the .gz) ───────
+      # Verified from the fresh Azure snapshot (2026-09-25).
+      # After the first periodic backup, the manifest object takes over.
+      # Leave blank to skip SHA-256 check (magic-byte check still applies).
+      - key: OMNI_STATE_SHA256
+        value: "0d85a22546dcb117c2b81903d3a709d9d112a5dccaf8b89b5b63671642649c81"
+
+      # ── Backup interval (seconds) ───────────────────────────────────────────
+      - key: OMNI_STATE_BACKUP_INTERVAL_SECONDS
+        value: "1800"
+
+      # ── OmniRoute secrets (set in Render dashboard) ─────────────────────────
+      - key: JWT_SECRET
+        sync: false
+      - key: API_KEY_SECRET
+        sync: false
+      - key: INITIAL_PASSWORD
+        sync: false
+      - key: STORAGE_ENCRYPTION_KEY
+        sync: false
+      - key: OMNIROUTE_WS_BRIDGE_SECRET
+        sync: false
+
+      # ── Public base URL (set in Render dashboard after first deploy) ─────────
+      # Example: https://omniroute-free.onrender.com
+      - key: NEXT_PUBLIC_BASE_URL
+        sync: false
