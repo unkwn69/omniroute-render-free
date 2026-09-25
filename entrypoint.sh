@@ -38,7 +38,10 @@ set -eu
 DATA_DIR="${DATA_DIR:-/app/data}"
 DB_PATH="$DATA_DIR/storage.sqlite"
 BACKUP_INTERVAL="${OMNI_STATE_BACKUP_INTERVAL_SECONDS:-1800}"
-HEALTH_PORT="${PORT:-10000}"
+export PORT="${PORT:-10000}"
+export HOSTNAME="${HOSTNAME:-0.0.0.0}"
+export OMNIROUTE_SERVER_HOST="${OMNIROUTE_SERVER_HOST:-0.0.0.0}"
+HEALTH_PORT="$PORT"
 
 # Supabase config (server-side only — never logged)
 SUPABASE_URL="${SUPABASE_URL:-}"

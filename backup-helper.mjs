@@ -116,7 +116,7 @@ async function main() {
   let db;
   try {
     console.error('[backup-helper] opening source DB...');
-    db = new Database(sourceDb, { fileMustExist: true, timeout: 5000 });
+    db = new Database(sourceDb, { fileMustExist: true });
 
     // WAL-consistent hot backup — the ONLY safe method for a live WAL database
     console.error('[backup-helper] running db.backup()...');
