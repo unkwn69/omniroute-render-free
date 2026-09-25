@@ -181,6 +181,8 @@ restore_state() {
   echo "[entrypoint] database restored to $DB_PATH."
 }
 
+shutting_down=0
+
 # ── Backup ────────────────────────────────────────────────────────────────────
 
 backup_state() {
@@ -262,8 +264,17 @@ fi
 
 # ── Start OmniRoute ───────────────────────────────────────────────────────────
 
-echo "[entrypoint] starting OmniRoute (omniroute serve --no-open)..."
-omniroute serve --no-open &
+OMNIROUTE_ENTRY="/app/dev/run-standalone.mjs"
+
+if [ ! -f "$OMNIROUTE_ENTRY" ]; then
+  echo "[entrypoint] ERROR: $OMNIROUTE_ENTRY not found." >&2
+  exit 1
+fi
+
+echo "[entrypoint] starting OmniRoute (node $OMNIROUTE_ENTRY)..."
+
+node "$OMNIROUTE_ENTRY" &
+
 child_pid=$!
 
 # ── Health-check wait ─────────────────────────────────────────────────────────
@@ -298,10 +309,28 @@ fi
 # ── Shutdown handler ──────────────────────────────────────────────────────────
 
 term_handler() {
-  echo "[entrypoint] shutdown signal — running final backup..."
-  backup_state || true
+  echo "[entrypoint] shutdown signal — stopping OmniRoute and running final backup..."
+  shutting_down=1
+  trap '' TERM INT
+
+  # Gracefully stop OmniRoute so final backup reads a quiesced DB
   kill -TERM "$child_pid" 2>/dev/null || true
-  wait "$child_pid" || true
+
+  # Wait up to 10 s for graceful exit
+  grace=0
+  while [ "$grace" -lt 10 ] && kill -0 "$child_pid" 2>/dev/null; do
+    sleep 1
+    grace=$((grace + 1))
+  done
+
+  # Final validated backup (non-fatal)
+  backup_state || true
+
+  # Force-kill if still running
+  if kill -0 "$child_pid" 2>/dev/null; then
+    kill -KILL "$child_pid" 2>/dev/null || true
+  fi
+  wait "$child_pid" 2>/dev/null || true
   exit 0
 }
 
@@ -312,7 +341,7 @@ trap term_handler TERM INT
 echo "[entrypoint] backup loop started (interval=${BACKUP_INTERVAL}s)."
 while kill -0 "$child_pid" 2>/dev/null; do
   sleep "$BACKUP_INTERVAL" || true
-  if kill -0 "$child_pid" 2>/dev/null; then
+  if kill -0 "$child_pid" 2>/dev/null && [ "$shutting_down" -eq 0 ]; then
     backup_state || true
   fi
 done
