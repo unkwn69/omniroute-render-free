@@ -5,32 +5,28 @@
 #   1. Create /app/data.
 #   2. If /app/data/storage.sqlite is absent:
 #      a. Read manifest from Supabase to find current snapshot object + SHA-256.
-#      b. Download the gzip snapshot using server-side API key auth.
+#      b. Download the gzip snapshot using server-side API key auth (Node.js fetch).
 #      c. Verify gzip integrity (gunzip -t).
 #      d. Decompress to a temp path.
-#      e. Verify decompressed SHA-256 matches manifest.
+#      e. Verify decompressed SHA-256 matches manifest / OMNI_STATE_SHA256.
 #      f. Run SQLite magic-byte check on decompressed file.
-#      g. Only then atomically move it to /app/data/storage.sqlite.
+#      g. Run SQLite PRAGMA integrity_check.
+#      h. Only then atomically move it to /app/data/storage.sqlite.
 #   3. Start exactly ONE OmniRoute process: omniroute serve --no-open
 #   4. Wait for health endpoint (max 90 s). Abort if child exits.
 #   5. Enter periodic backup loop (default 30 min):
 #      a. Run backup-helper.mjs → produces <stamp>.sqlite.gz + BACKUP_SHA256.
 #      b. Validate backup integrity.
-#      c. Upload gz to Supabase (overwrite SUPABASE_SNAPSHOT_OBJECT).
-#      d. Upload manifest (JSON: {object, sha256}) to Supabase.
-#      e. Verify: download manifest back and parse.
+#      c. Upload gz to Supabase (Node.js fetch).
+#      d. Upload manifest (JSON: {object, sha256}) to Supabase (Node.js fetch).
 #   6. On SIGTERM/INT: attempt one final backup, then shut down.
 #
 # Safety rules:
 #   - NEVER log SUPABASE_KEY or any credential value.
 #   - Restore failure aborts startup — no empty-DB fallback.
 #   - Backup failure is non-fatal (logs warning; server keeps running).
-#   - A crash during backup upload cannot corrupt the previous manifest
-#     because the manifest is only updated AFTER the snapshot upload
-#     is confirmed.
+#   - Manifest is only updated AFTER snapshot upload is confirmed.
 #   - Only one snapshot object is maintained (bounded storage).
-#   - OMNI_STATE_SHA256 is the initial required SHA-256 of the
-#     DECOMPRESSED database. After first backup, the manifest takes over.
 
 set -eu
 
@@ -44,9 +40,9 @@ export OMNIROUTE_SERVER_HOST="${OMNIROUTE_SERVER_HOST:-0.0.0.0}"
 HEALTH_PORT="$PORT"
 
 # Supabase config (server-side only — never logged)
-SUPABASE_URL="${SUPABASE_URL:-}"
-SUPABASE_KEY="${SUPABASE_STORAGE_KEY:-}"
-SUPABASE_BUCKET="${SUPABASE_BUCKET:-omniroute}"
+export SUPABASE_URL="${SUPABASE_URL:-}"
+export SUPABASE_STORAGE_KEY="${SUPABASE_STORAGE_KEY:-}"
+export SUPABASE_BUCKET="${SUPABASE_BUCKET:-omniroute}"
 
 # Snapshot and manifest object names
 SUPABASE_SNAPSHOT_OBJECT="${SUPABASE_SNAPSHOT_OBJECT:-storage-render-snapshot.sqlite.gz}"
@@ -58,7 +54,8 @@ OMNI_STATE_SHA256="${OMNI_STATE_SHA256:-0d85a22546dcb117c2b81903d3a709d9d112a5dc
 
 mkdir -p "$DATA_DIR"
 
-HELPER_PATH="/usr/local/bin/backup-helper.mjs"
+BACKUP_HELPER="/usr/local/bin/backup-helper.mjs"
+STORAGE_HELPER="/usr/local/bin/storage-helper.mjs"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -81,45 +78,22 @@ is_sqlite_file() {
 }
 
 supabase_download() {
-  # Download a private Supabase Storage object using server-side API key.
-  # Usage: supabase_download <object-name> <output-path>
-  # Never echoes the key.
   local obj="$1"
   local out="$2"
-  local encoded
-  encoded="$(printf '%s' "$obj" | sed 's|/|%2F|g')"
-  local url="$SUPABASE_URL/storage/v1/object/$SUPABASE_BUCKET/$encoded"
-  curl -fsSL --retry 3 --connect-timeout 15 --max-time 300 \
-    -H "apikey: $SUPABASE_KEY" \
-    -H "Authorization: Bearer $SUPABASE_KEY" \
-    "$url" -o "$out"
+  node "$STORAGE_HELPER" download "$obj" "$out"
 }
 
 supabase_upload() {
-  # Upload a file to Supabase Storage (upsert).
-  # Usage: supabase_upload <object-name> <local-path> <content-type>
-  # Never echoes the key.
   local obj="$1"
   local src="$2"
   local ct="${3:-application/octet-stream}"
-  local encoded
-  encoded="$(printf '%s' "$obj" | sed 's|/|%2F|g')"
-  local url="$SUPABASE_URL/storage/v1/object/$SUPABASE_BUCKET/$encoded"
-  curl -fsS --retry 2 --connect-timeout 15 --max-time 300 \
-    -X POST \
-    -H "apikey: $SUPABASE_KEY" \
-    -H "Authorization: Bearer $SUPABASE_KEY" \
-    -H "Content-Type: $ct" \
-    -H "Cache-Control: no-store" \
-    -H "x-upsert: true" \
-    --data-binary "@$src" \
-    "$url" >/dev/null
+  node "$STORAGE_HELPER" upload "$obj" "$src" "$ct"
 }
 
 # ── Restore ───────────────────────────────────────────────────────────────────
 
 restore_state() {
-  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_STORAGE_KEY" ]; then
     echo "[entrypoint] SUPABASE_URL or SUPABASE_STORAGE_KEY is not set — cannot restore." >&2
     exit 1
   fi
@@ -131,9 +105,6 @@ restore_state() {
   # Try to read manifest first (preferred — overrides OMNI_STATE_SHA256 after first backup)
   local manifest_tmp="$DATA_DIR/.manifest.$$.json"
   if supabase_download "$SUPABASE_MANIFEST_OBJECT" "$manifest_tmp" 2>/dev/null; then
-    # Parse object and sha256 from manifest JSON.
-    # Manifest format: {"object":"...","sha256":"..."}
-    # Use node for reliable JSON parsing (it's available in the image)
     local manifest_obj
     local manifest_sha
     manifest_obj="$(node -e "try{const m=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(m.object||'')}catch(e){}" "$manifest_tmp" 2>/dev/null || true)"
@@ -145,7 +116,6 @@ restore_state() {
       expected_sha256="$manifest_sha"
     else
       echo "[entrypoint] manifest found but could not parse — falling back to OMNI_STATE_SHA256."
-      rm -f "$manifest_tmp"
     fi
   else
     echo "[entrypoint] no manifest found — using OMNI_STATE_SHA256 and default snapshot object."
@@ -198,6 +168,14 @@ restore_state() {
     exit 1
   fi
 
+  # PRAGMA integrity_check
+  echo "[entrypoint] validating SQLite integrity..."
+  if ! node "$STORAGE_HELPER" verify-sqlite "$tmp_sql"; then
+    echo "[entrypoint] SQLite integrity check failed — rejecting." >&2
+    rm -f "$tmp_sql"
+    exit 1
+  fi
+
   # Atomic move to final path
   mv "$tmp_sql" "$DB_PATH"
   echo "[entrypoint] database restored to $DB_PATH."
@@ -206,7 +184,7 @@ restore_state() {
 # ── Backup ────────────────────────────────────────────────────────────────────
 
 backup_state() {
-  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_KEY" ]; then
+  if [ -z "$SUPABASE_URL" ] || [ -z "$SUPABASE_STORAGE_KEY" ]; then
     echo "[entrypoint] Supabase credentials absent — skipping backup."
     return 0
   fi
@@ -216,7 +194,7 @@ backup_state() {
     return 0
   fi
 
-  if [ ! -f "$HELPER_PATH" ]; then
+  if [ ! -f "$BACKUP_HELPER" ]; then
     echo "[entrypoint] backup-helper.mjs not found — skipping backup." >&2
     return 0
   fi
@@ -226,9 +204,8 @@ backup_state() {
   local backup_gz="$DATA_DIR/.backup.$stamp.sqlite.gz"
 
   echo "[entrypoint] starting backup (native db.backup + gzip)..."
-  # Run backup helper; stdout contains KEY=VALUE pairs; stderr has progress logs
   local result
-  if ! result="$(node "$HELPER_PATH" "$DB_PATH" "$backup_gz" 2>/dev/null)"; then
+  if ! result="$(node "$BACKUP_HELPER" "$DB_PATH" "$backup_gz" 2>/dev/null)"; then
     echo "[entrypoint] backup helper failed — skipping upload." >&2
     rm -f "$backup_gz"
     return 0
@@ -239,7 +216,6 @@ backup_state() {
     return 0
   fi
 
-  # Parse SHA-256 of the DECOMPRESSED content from helper output
   local backup_sha256
   backup_sha256="$(printf '%s\n' "$result" | grep '^BACKUP_UNCOMPRESSED_SHA256=' | cut -d= -f2 | tr -d '[:space:]')"
   local backup_integrity
@@ -257,7 +233,6 @@ backup_state() {
     return 0
   fi
 
-  # Upload snapshot (overwrite existing snapshot object — bounded storage)
   echo "[entrypoint] uploading backup snapshot..."
   if ! supabase_upload "$SUPABASE_SNAPSHOT_OBJECT" "$backup_gz" "application/gzip"; then
     echo "[entrypoint] snapshot upload failed (non-fatal)." >&2
@@ -267,8 +242,6 @@ backup_state() {
   echo "[entrypoint] snapshot uploaded."
   rm -f "$backup_gz"
 
-  # Write manifest JSON and upload it AFTER snapshot upload succeeds.
-  # This ensures a crash cannot leave manifest pointing to a nonexistent object.
   local manifest_tmp="$DATA_DIR/.manifest.$stamp.json"
   printf '{"object":"%s","sha256":"%s","ts":"%s"}\n' \
     "$SUPABASE_SNAPSHOT_OBJECT" "$backup_sha256" "$stamp" > "$manifest_tmp"
@@ -288,15 +261,12 @@ if [ ! -f "$DB_PATH" ]; then
 fi
 
 # ── Start OmniRoute ───────────────────────────────────────────────────────────
-# Confirmed production command for 3.8.50.
 
 echo "[entrypoint] starting OmniRoute (omniroute serve --no-open)..."
 omniroute serve --no-open &
 child_pid=$!
 
 # ── Health-check wait ─────────────────────────────────────────────────────────
-# /healthz is used per render.yaml configuration.
-# If OmniRoute exposes a different path, update healthCheckPath in render.yaml.
 
 echo "[entrypoint] waiting for OmniRoute on port $HEALTH_PORT..."
 startup_timeout=90
@@ -309,8 +279,7 @@ while [ $startup_elapsed -lt $startup_timeout ]; do
     exit 1
   fi
 
-  if curl -f -s --connect-timeout 2 --max-time 5 \
-      "http://localhost:$HEALTH_PORT/healthz" >/dev/null 2>&1; then
+  if node "$STORAGE_HELPER" health "$HEALTH_PORT" "/healthz" 2>/dev/null; then
     echo "[entrypoint] OmniRoute healthy."
     break
   fi
