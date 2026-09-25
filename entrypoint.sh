@@ -37,6 +37,24 @@ BACKUP_INTERVAL="${OMNI_STATE_BACKUP_INTERVAL_SECONDS:-1800}"
 export PORT="${PORT:-10000}"
 export HOSTNAME="${HOSTNAME:-0.0.0.0}"
 export OMNIROUTE_SERVER_HOST="${OMNIROUTE_SERVER_HOST:-0.0.0.0}"
+
+# Low-RAM Render Free defaults. These are upstream-supported OmniRoute
+# controls intended for constrained containers. Render Free has a hard
+# 512 MiB memory limit, so the Node heap and nonessential background work
+# must be bounded before the app starts. Dashboard env vars can override
+# these defaults when a larger instance is used later.
+export OMNIROUTE_MEMORY_MB="${OMNIROUTE_MEMORY_MB:-128}"
+export PROMPT_CACHE_MAX_SIZE="${PROMPT_CACHE_MAX_SIZE:-10}"
+export PROMPT_CACHE_MAX_BYTES="${PROMPT_CACHE_MAX_BYTES:-524288}"
+export SEMANTIC_CACHE_MAX_SIZE="${SEMANTIC_CACHE_MAX_SIZE:-10}"
+export SEMANTIC_CACHE_MAX_BYTES="${SEMANTIC_CACHE_MAX_BYTES:-1048576}"
+export STREAM_HISTORY_MAX="${STREAM_HISTORY_MAX:-10}"
+export OMNIROUTE_DISABLE_BACKGROUND_SERVICES="${OMNIROUTE_DISABLE_BACKGROUND_SERVICES:-true}"
+export OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK="${OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK:-true}"
+export OMNIROUTE_DISABLE_CONNECTION_RECOVERY="${OMNIROUTE_DISABLE_CONNECTION_RECOVERY:-true}"
+export OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT="${OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT:-1}"
+export OMNIROUTE_CHAT_ADMISSION_HEALTHY_HEADROOM="${OMNIROUTE_CHAT_ADMISSION_HEALTHY_HEADROOM:-0}"
+export APP_LOG_TO_FILE="${APP_LOG_TO_FILE:-false}"
 HEALTH_PORT="$PORT"
 
 # Supabase config (server-side only — never logged)

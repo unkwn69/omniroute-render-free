@@ -16,6 +16,35 @@ services:
       - key: NODE_ENV
         value: "production"
 
+      # ── Render Free low-memory profile ─────────────────────────────────────
+      # Keep the gateway inside the 512 MiB instance limit. These are also
+      # applied as defaults by entrypoint.sh so the current Render service
+      # can be updated manually without depending on Blueprint sync.
+      - key: OMNIROUTE_MEMORY_MB
+        value: "128"
+      - key: PROMPT_CACHE_MAX_SIZE
+        value: "10"
+      - key: PROMPT_CACHE_MAX_BYTES
+        value: "524288"
+      - key: SEMANTIC_CACHE_MAX_SIZE
+        value: "10"
+      - key: SEMANTIC_CACHE_MAX_BYTES
+        value: "1048576"
+      - key: STREAM_HISTORY_MAX
+        value: "10"
+      - key: OMNIROUTE_DISABLE_BACKGROUND_SERVICES
+        value: "true"
+      - key: OMNIROUTE_DISABLE_CREDENTIAL_HEALTH_CHECK
+        value: "true"
+      - key: OMNIROUTE_DISABLE_CONNECTION_RECOVERY
+        value: "true"
+      - key: OMNIROUTE_CHAT_MAX_HEAVY_IN_FLIGHT
+        value: "1"
+      - key: OMNIROUTE_CHAT_ADMISSION_HEALTHY_HEADROOM
+        value: "0"
+      - key: APP_LOG_TO_FILE
+        value: "false"
+
       # ── OmniRoute data directory ────────────────────────────────────────────
       - key: DATA_DIR
         value: "/app/data"
